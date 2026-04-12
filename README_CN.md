@@ -1,5 +1,7 @@
 # AttentionNudge
 
+[English](./README.md) | 中文版本
+
 LLM 驱动的浏览器专注力助手。帮助你在浏览网页时，温柔地意识到自己是否偏离了当前任务目标。
 
 ## 特性

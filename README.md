@@ -1,5 +1,7 @@
 # AttentionNudge
 
+[中文版本](./README_CN.md) | English
+
 LLM-powered browser focus assistant. A Chrome/Edge extension that gently nudges you back on track when you drift away from your current task.
 
 ## Features
