@@ -47,4 +47,4 @@ npm run dev
 
 ## 开源协议
 
-MIT
+GPL v3

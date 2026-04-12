@@ -47,4 +47,4 @@ Load the extension in Chrome:
 
 ## License
 
-MIT
+GPL v3
