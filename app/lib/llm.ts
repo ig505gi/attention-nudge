@@ -10,9 +10,12 @@ const SYSTEM_PROMPT = `你是一个专注力领航员。你的职责是温和地
 输出格式（必须是纯JSON）：
 {
   "deviation_index": 1-5的数字,
-  "message": "一句温柔的提醒话术",
-  "action": "wait" | "nudge" | "block"
+  "message": "一句温柔的提醒话术（不超过50个中文字符）",
+  "action": "wait" | "nudge" | "block",
+  "button_options": ["左按钮文案（认同/接受，2-10字）", "右按钮文案（调侃/给台阶，2-10字）"]
 }
+
+字数要求：message 最多 50 字，button_options 每项 2-10 字。
 
 deviation_index 定义：
 1 = 完全相关（如正在查阅技术文档、StackOverflow）
@@ -75,12 +78,41 @@ export async function callLLM(
     }
 
     const parsed = JSON.parse(jsonStr)
+
+    // 软截断：在 50 字附近找自然断点（句号/逗号/顿号）
+    const rawMsg = parsed.message || "注意偏离了主线任务哦"
+    const softTruncate = (text: string, maxLen = 50) => {
+      if (text.length <= maxLen) return text
+      const segment = text.slice(0, maxLen + 10)
+      const lastBreak = Math.max(
+        segment.lastIndexOf("。"),
+        segment.lastIndexOf("，"),
+        segment.lastIndexOf("、")
+      )
+      return lastBreak > 10 ? text.slice(0, lastBreak + 1) : text.slice(0, maxLen) + "…"
+    }
+
+    const rawOptions = parsed.button_options
+    const buttonOptions: [string, string] | undefined = rawOptions?.[0] && rawOptions?.[1]
+      ? [rawOptions[0].slice(0, 10), rawOptions[1].slice(0, 10)]
+      : undefined
+
     return {
       deviation_index: Math.min(5, Math.max(1, parsed.deviation_index || 3)),
-      message: parsed.message || "注意偏离了主线任务哦",
+      message: softTruncate(rawMsg),
       action: ["wait", "nudge", "block"].includes(parsed.action)
         ? parsed.action
-        : "wait"
+        : "wait",
+      button_options: buttonOptions,
+    }
+
+    return {
+      deviation_index: Math.min(5, Math.max(1, parsed.deviation_index || 3)),
+      message: rawMsg,
+      action: ["wait", "nudge", "block"].includes(parsed.action)
+        ? parsed.action
+        : "wait",
+      button_options: buttonOptions,
     }
   } catch (err) {
     console.error("LLM call failed:", err)

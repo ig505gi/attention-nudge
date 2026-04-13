@@ -1,4 +1,5 @@
 import { getSettings, getUserGoal, loadDebugMode, debugLog } from "~/lib/storage"
+import type { Settings } from "~/lib/types"
 import { callLLM } from "~/lib/llm"
 import type { PageInfo, TabState, BatchEntry, LLMResponse } from "~/lib/types"
 
@@ -68,6 +69,15 @@ async function flushBatch() {
   debounceTimer = null
 
   const settings = await getSettings()
+  if (!settings?.enabled) {
+    debugLog("BATCH", "⏸️ 服务已关闭，跳过 LLM 调用")
+    entries.forEach(e => {
+      const state = tabStates.get(e.tabId)
+      if (state) state.pendingRequest = false
+    })
+    return
+  }
+
   const userGoal = await getUserGoal()
   if (!settings?.apiKey || !settings?.apiUrl || !userGoal?.goal) {
     debugLog("LLM", "⚠️ 跳过批量 LLM：缺少配置")
@@ -170,7 +180,10 @@ function triggerIntervention(tabId: number, response: LLMResponse) {
     debugLog("INTERVENTION", `   "${response.message}"`)
     chrome.tabs.sendMessage(tabId, {
       type: "SHOW_INTERVENTION",
-      payload: { message: response.message }
+      payload: {
+        message: response.message,
+        button_options: response.button_options,
+      }
     })
   } else if (response.deviation_index === 3 || response.action === "nudge") {
     debugLog("INTERVENTION", `🟡 [${tabId}] 轻度提醒 (偏离指数: ${response.deviation_index})`)
@@ -186,6 +199,11 @@ function triggerIntervention(tabId: number, response: LLMResponse) {
 
 // 处理来自 content script 的消息
 chrome.runtime.onMessage.addListener(async (msg, sender, sendResponse) => {
+  if (msg.type === "GET_ICON_URL") {
+    sendResponse({ iconUrl: chrome.runtime.getURL("icon128.plasmo.png") })
+    return true
+  }
+
   const tabId = sender.tab?.id
   if (!tabId) {
     sendResponse({ ok: true })
@@ -214,9 +232,8 @@ chrome.runtime.onMessage.addListener(async (msg, sender, sendResponse) => {
     }
   } else if (msg.type === "FEEDBACK_NEGATIVE") {
     debugLog("FEEDBACK", `👎 [${tabId}] 用户点击了「不准确」`)
-  } else if (msg.type === "DEBUG_MODE_CHANGED") {
-    await loadDebugMode()
-    debugLog("CONFIG", `Debug 模式: ${msg.payload.debugMode ? "开启" : "关闭"}`)
+  } else if (msg.type === "SERVICE_TOGGLE") {
+    debugLog("CONFIG", `服务: ${msg.payload.enabled ? "开启" : "关闭"}`)
   }
 
   sendResponse({ ok: true })

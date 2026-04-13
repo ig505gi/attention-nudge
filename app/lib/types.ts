@@ -1,4 +1,5 @@
 export interface Settings {
+  enabled: boolean
   apiKey: string
   apiUrl: string
   model: string
@@ -31,6 +32,8 @@ export interface LLMResponse {
   deviation_index: number // 1-5
   message: string
   action: "wait" | "nudge" | "block"
+  /** 干预弹窗两个按钮的文案，RPG 风格。留空则用默认随机文案。 */
+  button_options?: [string, string]
 }
 
 export interface BrowsingRecord {

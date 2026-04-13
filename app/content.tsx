@@ -49,7 +49,10 @@ function ContentScript() {
     const handleIntervention = (message: any) => {
       if (message.type === "SHOW_INTERVENTION") {
         clearTimeout(fallback)
-        renderToast(message.payload.message)
+        renderToast(
+          message.payload.message,
+          message.payload.button_options
+        )
       } else if (message.type === "HIDE_INTERVENTION") {
         removeToast()
       }
@@ -81,7 +84,7 @@ function ContentScript() {
 // 渲染干预弹窗
 let toastRoot: ReturnType<typeof createRoot> | null = null
 
-function renderToast(message: string) {
+function renderToast(message: string, buttonOptions?: [string, string]) {
   const existing = document.getElementById("attention-nudge-toast")
   if (existing) existing.remove()
 
@@ -93,11 +96,8 @@ function renderToast(message: string) {
   toastRoot.render(
     <InterventionToast
       message={message}
-      onFeedback={(up) => {
-        if (!up) {
-          chrome.runtime.sendMessage({ type: "FEEDBACK_NEGATIVE" })
-        }
-      }}
+      buttonOptions={buttonOptions}
+      onFeedback={() => {}} // 按钮点击不再发送任何消息，仅关闭弹窗
     />
   )
 }
