@@ -2,6 +2,8 @@ import { useEffect } from "react"
 import { createRoot } from "react-dom/client"
 import InterventionToast from "~/components/InterventionToast"
 
+const THEME_PREF_STORAGE_KEY = "optionsThemePreference"
+
 function ContentScript() {
   useEffect(() => {
     let sent = false
@@ -84,7 +86,17 @@ function ContentScript() {
 // 渲染干预弹窗
 let toastRoot: ReturnType<typeof createRoot> | null = null
 
-function renderToast(message: string, buttonOptions?: [string, string]) {
+async function resolveToastThemePreference(): Promise<"light" | "dark" | undefined> {
+  if (typeof chrome === "undefined" || !chrome.storage?.local) {
+    return undefined
+  }
+
+  const result = await chrome.storage.local.get([THEME_PREF_STORAGE_KEY])
+  const pref = result[THEME_PREF_STORAGE_KEY]
+  return pref === "light" || pref === "dark" ? pref : undefined
+}
+
+async function renderToast(message: string, buttonOptions?: [string, string]) {
   const existing = document.getElementById("attention-nudge-toast")
   if (existing) existing.remove()
 
@@ -92,12 +104,14 @@ function renderToast(message: string, buttonOptions?: [string, string]) {
   container.id = "attention-nudge-toast"
   document.body.appendChild(container)
 
+  const forceTheme = await resolveToastThemePreference()
+
   toastRoot = createRoot(container)
   toastRoot.render(
     <InterventionToast
       message={message}
       buttonOptions={buttonOptions}
-      onFeedback={() => {}} // 按钮点击不再发送任何消息，仅关闭弹窗
+      forceTheme={forceTheme}
     />
   )
 }

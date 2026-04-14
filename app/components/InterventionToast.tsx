@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 // ─── RPG Button Pool ─────────────────────────────────────────────────────────
 // 左侧：接受/认同类（继续专注）  右侧：轻松化解类（给自己台阶）
@@ -20,122 +20,155 @@ const RPG_BUTTON_POOL: [string, string][] = [
 
 interface Props {
   message: string
-  /** 两个按钮的 RPG 文案，默认随机从池中抽取。留空则自动生成。 */
   buttonOptions?: [string, string]
-  /** 不再支持自动消失 — 弹窗停留直到用户点击按钮，给人紧迫感。 */
+  forceTheme?: "light" | "dark"
+  entryDurationMs?: number
+  topOffsetPx?: number
+  pulseMode?: "off" | "soft" | "medium"
+  onClose?: (choice: "primary" | "secondary") => void
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-const ACCENT = "#0F766E"
+const FONT_BODY =
+  'ui-rounded, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Segoe UI", sans-serif'
 
-function createStyles(isDark: boolean) {
-  const bg = isDark ? "#1E1E2E" : "#FFFFFF"
-  const text = isDark ? "#F0F0F0" : "#1A1A2E"
-  const text2 = isDark ? "#A0A0B0" : "#6B7280"
-  const border = isDark ? "#3A3A4C" : "#E5E7EB"
-  const divider = isDark ? "#2E2E3E" : "#F0F0F0"
-  const accent = isDark ? "#34D399" : ACCENT
-  const neutralBg = isDark ? "#2A2A3A" : "#F3F4F6"
-  const neutralHover = isDark ? "#363648" : "#E5E7EB"
-  const actionBg = isDark ? "#1E2A2A" : "#F0FDFB"
-  const actionHover = isDark ? "#263336" : "#CCFBF1"
-  const actionText = isDark ? "#34D399" : "#0F766E"
+function createStyles(
+  themeMode: "light" | "dark",
+  compact: boolean,
+  topOffsetPx?: number,
+  pulseMode: "off" | "soft" | "medium" = "soft"
+) {
+  const isDark = themeMode === "dark"
+  const cardBg = isDark
+    ? "linear-gradient(160deg, rgba(23, 31, 50, 0.97) 0%, rgba(17, 24, 41, 0.97) 100%)"
+    : "linear-gradient(160deg, rgba(255, 255, 255, 0.97) 0%, rgba(255, 251, 243, 0.97) 100%)"
+  const border = isDark ? "rgba(170, 185, 216, 0.24)" : "rgba(44, 49, 64, 0.14)"
+  const shadow = isDark
+    ? "0 18px 44px rgba(4, 9, 20, 0.52), 0 3px 12px rgba(4, 9, 20, 0.34)"
+    : "0 18px 42px rgba(24, 38, 63, 0.18), 0 2px 10px rgba(24, 38, 63, 0.1)"
+  const pulseShadowSoft = isDark
+    ? "0 24px 52px rgba(4, 9, 20, 0.58), 0 0 0 1px rgba(243, 154, 70, 0.2)"
+    : "0 22px 48px rgba(24, 38, 63, 0.22), 0 0 0 1px rgba(243, 154, 70, 0.2)"
+  const pulseShadowMedium = isDark
+    ? "0 28px 56px rgba(4, 9, 20, 0.62), 0 0 0 1px rgba(243, 154, 70, 0.28)"
+    : "0 26px 52px rgba(24, 38, 63, 0.26), 0 0 0 1px rgba(243, 154, 70, 0.28)"
+  const pulseShadow = pulseMode === "medium" ? pulseShadowMedium : pulseMode === "soft" ? pulseShadowSoft : shadow
+  const text = isDark ? "#E7EEFC" : "#3E4D63"
+  const iconStroke = isDark ? "#FFCAA2" : "#B95D1D"
+  const iconBg = isDark
+    ? "linear-gradient(145deg, rgba(243, 154, 70, 0.22), rgba(139, 136, 232, 0.2))"
+    : "linear-gradient(145deg, rgba(243, 154, 70, 0.2), rgba(139, 136, 232, 0.18))"
+  const primaryBg = "linear-gradient(140deg, #F39A46 0%, #8B88E8 100%)"
+  const primaryShadow = isDark ? "0 8px 18px rgba(5, 8, 18, 0.42)" : "0 8px 18px rgba(31, 45, 74, 0.2)"
+  const secondaryBg = isDark ? "rgba(27, 37, 60, 0.84)" : "rgba(255, 255, 255, 0.84)"
+  const secondaryHover = isDark ? "rgba(36, 47, 74, 0.94)" : "rgba(249, 252, 255, 1)"
+  const secondaryBorder = isDark ? "rgba(170, 185, 216, 0.26)" : "rgba(44, 49, 64, 0.16)"
+  const secondaryText = isDark ? "#D4E0F7" : "#556A82"
+  const top = typeof topOffsetPx === "number" ? `${topOffsetPx}px` : "clamp(56px, 14vh, 132px)"
 
   return {
     wrapper: {
       position: "fixed" as const,
-      top: "50%",
+      top,
       left: "50%",
-      transform: "translate(-50%, -50%)",
+      transform: "translateX(-50%)",
       width: "100%",
-      maxWidth: 680,
+      maxWidth: 760,
       zIndex: 2147483647,
-      fontFamily:
-        '-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif',
-      padding: "0 24px",
+      fontFamily: FONT_BODY,
+      padding: compact ? "0 12px" : "0 20px",
       boxSizing: "border-box" as const,
+      pointerEvents: "none" as const
     },
     card: {
-      background: bg,
-      borderRadius: 12,
+      background: cardBg,
+      borderRadius: 18,
       border: `1px solid ${border}`,
-      boxShadow: isDark
-        ? "0 4px 24px rgba(0, 0, 0, 0.4), 0 1px 4px rgba(0, 0, 0, 0.25)"
-        : "0 4px 24px rgba(0, 0, 0, 0.08), 0 1px 4px rgba(0, 0, 0, 0.04)",
+      boxShadow: shadow,
       display: "flex",
-      alignItems: "center",
-      gap: 12,
-      padding: "13px 16px",
+      alignItems: compact ? "stretch" : "center",
+      gap: compact ? 10 : 14,
+      flexWrap: "wrap" as const,
+      padding: compact ? "12px 12px 11px" : "15px 17px",
+      pointerEvents: "auto" as const
     },
     iconWrap: {
-      width: 32,
-      height: 32,
-      borderRadius: 8,
-      background: "transparent",
+      width: compact ? 34 : 40,
+      height: compact ? 34 : 40,
+      borderRadius: compact ? 12 : 14,
+      background: iconBg,
+      border: `1px solid ${isDark ? "rgba(255, 227, 200, 0.2)" : "rgba(44, 49, 64, 0.12)"}`,
+      boxShadow: isDark ? "inset 0 1px 0 rgba(255, 255, 255, 0.05)" : "inset 0 1px 0 rgba(255, 255, 255, 0.7)",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
       flexShrink: 0,
+      animation: "toastIconPulse 2.6s ease-in-out 0.5s 2"
     },
     content: {
-      flex: 1,
-      minWidth: 0,
-    },
-    label: {
-      fontSize: 11,
-      fontWeight: 600,
-      letterSpacing: "0.05em",
-      textTransform: "uppercase" as const,
-      color: accent,
-      marginBottom: 2,
+      flex: compact ? "1 1 100%" : "1 1 240px",
+      minWidth: 0
     },
     message: {
-      fontSize: 14,
+      margin: 0,
+      fontSize: compact ? 13.5 : 14,
+      fontWeight: 500,
       color: text,
-      lineHeight: 1.5,
-    },
-    divider: {
-      width: 1,
-      height: 32,
-      background: divider,
-      flexShrink: 0,
+      lineHeight: 1.56,
+      overflowWrap: "anywhere" as const,
+      wordBreak: "break-word" as const
     },
     actions: {
       display: "flex",
-      flexDirection: "column" as const,
-      gap: 4,
-      flexShrink: 0,
+      gap: 8,
+      flexShrink: 1,
+      flexWrap: "wrap" as const,
+      marginLeft: compact ? 0 : "auto",
+      minWidth: 0,
+      width: compact ? "100%" : undefined,
+      justifyContent: compact ? ("stretch" as const) : ("flex-end" as const)
     },
     btnBase: {
-      padding: "6px 14px",
-      border: `1px solid ${border}`,
-      borderRadius: 7,
+      padding: "9px 13px",
+      borderRadius: 12,
       cursor: "pointer",
-      fontSize: 13,
-      fontWeight: 500,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 12.5,
+      fontWeight: 600,
       transition: "all 0.18s ease",
-      fontFamily:
-        '-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif',
-      textAlign: "left" as const,
-      lineHeight: 1.4,
+      fontFamily: FONT_BODY,
+      textAlign: "center" as const,
+      lineHeight: 1.25,
+      minWidth: compact ? 0 : 126,
+      flex: compact ? "1 1 100%" : "1 1 168px",
+      maxWidth: "100%",
+      whiteSpace: "normal" as const,
+      overflowWrap: "anywhere" as const,
+      wordBreak: "break-word" as const
     },
     btnPrimary: {
-      background: actionBg,
-      color: actionText,
-      borderColor: isDark ? "#1A3530" : "#A7F3D0",
+      background: primaryBg,
+      color: "#FFFFFF",
+      border: "none",
+      boxShadow: primaryShadow
     },
     btnPrimaryHover: {
-      background: actionHover,
+      filter: "brightness(1.06)"
     },
     btnSecondary: {
-      background: neutralBg,
-      color: text2,
-      borderColor: "transparent",
+      background: secondaryBg,
+      color: secondaryText,
+      border: `1px solid ${secondaryBorder}`
     },
     btnSecondaryHover: {
-      background: neutralHover,
-      color: text,
+      background: secondaryHover,
+      color: text
     },
+    iconStroke,
+    shadow,
+    pulseShadow
   }
 }
 
@@ -143,10 +176,16 @@ function createStyles(isDark: boolean) {
 export default function InterventionToast({
   message,
   buttonOptions,
+  forceTheme,
+  entryDurationMs,
+  topOffsetPx,
+  pulseMode = "soft",
+  onClose
 }: Props) {
   const [closed, setClosed] = useState(false)
   const [hoveredBtn, setHoveredBtn] = useState<string | null>(null)
-  const [isDark, setIsDark] = useState(false)
+  const [themeMode, setThemeMode] = useState<"light" | "dark">(forceTheme ?? "light")
+  const [compact, setCompact] = useState(false)
 
   // Pick random buttons
   const options = useMemo<[string, string]>(() => {
@@ -158,20 +197,56 @@ export default function InterventionToast({
     return pick
   }, [buttonOptions])
 
-  // Auto-dismiss 已移除，弹窗停留直到用户主动点击
-
   // Detect dark mode
   useEffect(() => {
+    if (forceTheme) {
+      setThemeMode(forceTheme)
+      return
+    }
+
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      setThemeMode("light")
+      return
+    }
+
     const mq = window.matchMedia("(prefers-color-scheme: dark)")
-    setIsDark(mq.matches)
-    const handler = (e: MediaQueryListEvent) => setIsDark(e.matches)
-    mq.addEventListener("change", handler)
-    return () => mq.removeEventListener("change", handler)
+    setThemeMode(mq.matches ? "dark" : "light")
+
+    const handler = (e: MediaQueryListEvent) => setThemeMode(e.matches ? "dark" : "light")
+    if (typeof mq.addEventListener === "function") {
+      mq.addEventListener("change", handler)
+      return () => mq.removeEventListener("change", handler)
+    }
+
+    mq.addListener(handler)
+    return () => mq.removeListener(handler)
+  }, [forceTheme])
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+
+    const onResize = () => setCompact(window.innerWidth < 560)
+    onResize()
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
   }, [])
 
   if (closed) return null
 
-  const s = createStyles(isDark)
+  const safeEntryDuration = Math.max(320, Math.min(1200, entryDurationMs ?? 620))
+  const safeTopOffset = typeof topOffsetPx === "number" ? Math.max(40, Math.min(260, topOffsetPx)) : undefined
+  const s = createStyles(themeMode, compact, safeTopOffset, pulseMode)
+  const pulseAnim =
+    pulseMode === "off"
+      ? ""
+      : `, toastCardPulse ${pulseMode === "medium" ? "2.1s" : "2.4s"} ease-in-out ${Math.round(safeEntryDuration * 1.15)}ms 2`
+
+  const handleClose = (choice: "primary" | "secondary") => {
+    setClosed(true)
+    onClose?.(choice)
+  }
 
   const primaryStyle = {
     ...s.btnBase,
@@ -187,13 +262,26 @@ export default function InterventionToast({
   return (
     <>
       <style>{`
-        @keyframes toastSlideIn {
-          from { opacity: 0; transform: translate(-50%, calc(-50% - 14px)); }
-          to   { opacity: 1; transform: translate(-50%, -50%); }
+        @keyframes toastSlideInSoft {
+          from { opacity: 0; transform: translateY(-14px) scale(0.985); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes toastCardPulse {
+          0%, 100% { box-shadow: ${s.shadow}; }
+          50% { box-shadow: ${s.pulseShadow}; }
+        }
+        @keyframes toastIconPulse {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.06); }
         }
       `}</style>
       <div style={s.wrapper}>
-        <div style={{ ...s.card, position: "relative" as const, animation: "toastSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) both" }}>
+        <div
+          style={{
+            ...s.card,
+            position: "relative" as const,
+            animation: `toastSlideInSoft ${safeEntryDuration}ms cubic-bezier(0.16, 0.84, 0.2, 1) both${pulseAnim}`
+          }}>
           {/* Icon */}
           <div style={s.iconWrap}>
             <svg
@@ -201,7 +289,7 @@ export default function InterventionToast({
               height="18"
               viewBox="0 0 24 24"
               fill="none"
-              stroke={isDark ? "#34D399" : "#0F766E"}
+              stroke={s.iconStroke}
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -215,18 +303,14 @@ export default function InterventionToast({
 
           {/* Content */}
           <div style={s.content}>
-            <div style={s.label}>专注提醒</div>
             <p style={s.message}>{message}</p>
           </div>
-
-          {/* Vertical divider */}
-          <div style={s.divider} />
 
           {/* RPG Action buttons */}
           <div style={s.actions}>
             <button
               style={primaryStyle}
-              onClick={() => setClosed(true)}
+              onClick={() => handleClose("primary")}
               onMouseEnter={() => setHoveredBtn("primary")}
               onMouseLeave={() => setHoveredBtn(null)}
             >
@@ -234,15 +318,14 @@ export default function InterventionToast({
             </button>
             <button
               style={secondaryStyle}
-              onClick={() => setClosed(true)}
+              onClick={() => handleClose("secondary")}
               onMouseEnter={() => setHoveredBtn("secondary")}
               onMouseLeave={() => setHoveredBtn(null)}
             >
               {options[1]}
             </button>
           </div>
-
-          </div>
+        </div>
       </div>
     </>
   )
