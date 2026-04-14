@@ -6,7 +6,10 @@
   "author": "",
   "scripts": {
     "dev": "plasmo dev",
-    "build": "plasmo build"
+    "build": "plasmo build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "plasmo": "^0.90.5",
@@ -14,14 +17,26 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/chrome": "^0.0.268",
     "@types/node": "^20.11.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
-    "typescript": "^5.3.0"
+    "@vitest/coverage-v8": "^4.1.4",
+    "jsdom": "^29.0.2",
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.4"
   },
   "manifest": {
-    "host_permissions": ["<all_urls>"],
-    "permissions": ["storage", "idle", "tabs"]
+    "host_permissions": [
+      "<all_urls>"
+    ],
+    "permissions": [
+      "storage",
+      "idle",
+      "tabs"
+    ]
   }
 }

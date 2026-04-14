@@ -24,6 +24,163 @@ loadDebugMode()
 //  工具函数
 // ─────────────────────────────────────────────
 
+type ToolbarState = "enabled" | "disabled"
+
+const toolbarIconCache: Partial<Record<ToolbarState, Record<number, ImageData>>> = {}
+let toolbarUpdateToken = 0
+
+function getManifestIconMap(): Record<number, string> {
+  const manifest = chrome.runtime.getManifest() as chrome.runtime.Manifest & {
+    action?: { default_icon?: string | Record<string, string> }
+  }
+
+  const mergedIcons: Record<number, string> = {}
+
+  const appendRecord = (record?: Record<string, string>) => {
+    if (!record) return
+    Object.entries(record).forEach(([size, path]) => {
+      const n = Number(size)
+      if (Number.isFinite(n) && n > 0 && path) {
+        mergedIcons[n] = path
+      }
+    })
+  }
+
+  appendRecord(manifest.icons as Record<string, string> | undefined)
+
+  const actionIcon = manifest.action?.default_icon
+  if (typeof actionIcon === "string" && actionIcon) {
+    const sizes = Object.keys(mergedIcons).map(Number).filter((n) => Number.isFinite(n) && n > 0)
+    const fallbackSize = sizes.length > 0 ? Math.max(...sizes) : 128
+    if (!mergedIcons[fallbackSize]) {
+      mergedIcons[fallbackSize] = actionIcon
+    }
+  } else {
+    appendRecord(actionIcon)
+  }
+
+  return mergedIcons
+}
+
+function getManifestIconPath(): string | null {
+  const iconMap = getManifestIconMap()
+  const sizes = Object.keys(iconMap)
+    .map(Number)
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => b - a)
+
+  if (sizes.length === 0) return null
+  return iconMap[sizes[0]]
+}
+
+async function renderToolbarIcon(path: string, size: number, state: ToolbarState): Promise<ImageData | null> {
+  try {
+    if (typeof OffscreenCanvas === "undefined") {
+      return null
+    }
+    const response = await fetch(chrome.runtime.getURL(path))
+    if (!response.ok) return null
+
+    const blob = await response.blob()
+    const bitmap = await createImageBitmap(blob)
+    const canvas = new OffscreenCanvas(size, size)
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return null
+
+    ctx.clearRect(0, 0, size, size)
+    ctx.drawImage(bitmap, 0, 0, size, size)
+
+    const imageData = ctx.getImageData(0, 0, size, size)
+    const data = imageData.data
+
+    if (state === "enabled") {
+      // 仅替换图标内部“近白色描边”像素，避免给图标新增外部描边
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i]
+        const g = data[i + 1]
+        const b = data[i + 2]
+        const a = data[i + 3]
+
+        if (a === 0) continue
+
+        const max = Math.max(r, g, b)
+        const min = Math.min(r, g, b)
+        const nearWhite = r >= 210 && g >= 210 && b >= 210 && max - min <= 24
+        if (!nearWhite) continue
+
+        // 按亮度保留抗锯齿层次
+        const lum = (r + g + b) / (255 * 3)
+        data[i] = Math.round(12 + borderColorRGB.r * lum)
+        data[i + 1] = Math.round(12 + borderColorRGB.g * lum)
+        data[i + 2] = Math.round(12 + borderColorRGB.b * lum)
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0)
+    return imageData
+  } catch {
+    return null
+  }
+}
+
+const borderColorRGB = { r: 34, g: 197, b: 94 } // #22C55E
+
+async function getToolbarIcon(state: ToolbarState): Promise<Record<number, ImageData> | null> {
+  if (toolbarIconCache[state]) {
+    return toolbarIconCache[state]!
+  }
+
+  const iconMap = getManifestIconMap()
+  const imageDataMap: Record<number, ImageData> = {}
+
+  const entries = Object.entries(iconMap)
+    .map(([size, path]) => [Number(size), path] as const)
+    .filter(([size, path]) => Number.isFinite(size) && size > 0 && !!path)
+
+  for (const [size, path] of entries) {
+    const data = await renderToolbarIcon(path, size, state)
+    if (data) {
+      imageDataMap[size] = data
+    }
+  }
+
+  if (Object.keys(imageDataMap).length === 0) {
+    return null
+  }
+
+  toolbarIconCache[state] = imageDataMap
+  return imageDataMap
+}
+
+async function updateToolbarStatus(enabled: boolean) {
+  const token = ++toolbarUpdateToken
+  const state: ToolbarState = enabled ? "enabled" : "disabled"
+  const title = enabled ? "AttentionNudge（已开启）" : "AttentionNudge（已关闭）"
+
+  const iconData = await getToolbarIcon(state)
+  if (token !== toolbarUpdateToken) {
+    return
+  }
+
+  await chrome.action.setBadgeText({ text: "" })
+  if (iconData && Object.keys(iconData).length > 0) {
+    await chrome.action.setIcon({ imageData: iconData })
+  } else {
+    const iconMap = getManifestIconMap()
+    if (Object.keys(iconMap).length > 0) {
+      await chrome.action.setIcon({ path: iconMap })
+    }
+  }
+  await chrome.action.setTitle({ title })
+}
+
+async function refreshToolbarStatusFromStorage() {
+  const settings = await getSettings()
+  await updateToolbarStatus(settings?.enabled ?? true)
+}
+
+refreshToolbarStatusFromStorage().catch(() => {})
+
 function getOrCreateTabState(tabId: number, pageInfo: PageInfo, startTime: number): TabState {
   if (!tabStates.has(tabId)) {
     tabStates.set(tabId, {
@@ -200,7 +357,15 @@ function triggerIntervention(tabId: number, response: LLMResponse) {
 // 处理来自 content script 的消息
 chrome.runtime.onMessage.addListener(async (msg, sender, sendResponse) => {
   if (msg.type === "GET_ICON_URL") {
-    sendResponse({ iconUrl: chrome.runtime.getURL("icon128.plasmo.png") })
+    const iconPath = getManifestIconPath()
+    sendResponse({ iconUrl: iconPath ? chrome.runtime.getURL(iconPath) : "" })
+    return true
+  }
+
+  if (msg.type === "SERVICE_TOGGLE") {
+    debugLog("CONFIG", `服务: ${msg.payload.enabled ? "开启" : "关闭"}`)
+    updateToolbarStatus(!!msg.payload?.enabled).catch(() => {})
+    sendResponse({ ok: true })
     return true
   }
 
@@ -232,8 +397,6 @@ chrome.runtime.onMessage.addListener(async (msg, sender, sendResponse) => {
     }
   } else if (msg.type === "FEEDBACK_NEGATIVE") {
     debugLog("FEEDBACK", `👎 [${tabId}] 用户点击了「不准确」`)
-  } else if (msg.type === "SERVICE_TOGGLE") {
-    debugLog("CONFIG", `服务: ${msg.payload.enabled ? "开启" : "关闭"}`)
   }
 
   sendResponse({ ok: true })
@@ -285,4 +448,15 @@ chrome.idle.onStateChanged.addListener((state) => {
       s.isVisible = false
     }
   })
+})
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local" || !changes.settings?.newValue) {
+    return
+  }
+
+  const nextSettings = changes.settings.newValue as Settings
+  if (typeof nextSettings.enabled === "boolean") {
+    updateToolbarStatus(nextSettings.enabled).catch(() => {})
+  }
 })
