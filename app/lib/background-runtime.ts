@@ -12,6 +12,7 @@ import type {
   LLMRequest,
   LLMResponse,
   PageInfo,
+  PageEvaluationReadiness,
   RecentPageSummary,
   RuntimeIntervention,
   Settings,
@@ -49,7 +50,9 @@ function createTabState(pageInfo: PageInfo, now: number): TabState {
   return {
     pageInfo,
     pageEnteredAt: now,
-    pageCheckpointEligibleAt: now + PAGE_CHECKPOINT_DELAY_MS,
+    pageCheckpointEligibleAt: isPageEvaluationReady(pageInfo)
+      ? now + PAGE_CHECKPOINT_DELAY_MS
+      : null,
     lastTriggeredDwellBoundary: 0,
     activeDwellSeconds: 0,
     lastPulseAt: now,
@@ -77,8 +80,30 @@ function buildPageInfo(payload: Partial<PageInfo>, now: number): PageInfo {
     meta: payload.meta ?? "",
     url: payload.url ?? "",
     excerpt: payload.excerpt ?? "",
-    timestamp: now
+    timestamp: now,
+    adapter_id: payload.adapter_id ?? "generic",
+    evaluation_readiness: payload.evaluation_readiness ?? "ready",
+    evaluation_ready: payload.evaluation_ready ?? true,
+    quality_reason: payload.quality_reason
   }
+}
+
+function getPageReadiness(pageInfo: PageInfo): PageEvaluationReadiness {
+  return pageInfo.evaluation_readiness ?? "ready"
+}
+
+function isPageEvaluationReady(pageInfo: PageInfo): boolean {
+  return pageInfo.evaluation_ready !== false
+}
+
+function getPageQualitySkipLabel(pageInfo: PageInfo): string {
+  return getPageReadiness(pageInfo) === "low_info"
+    ? "页面信息低质量"
+    : "页面信息未就绪"
+}
+
+function getDwellBoundary(activeDwellSeconds: number): number {
+  return Math.floor(activeDwellSeconds / 60) * 60
 }
 
 function appendRecentPage(state: TabState, now: number) {
@@ -100,7 +125,9 @@ function resetForNewPage(state: TabState, pageInfo: PageInfo, now: number) {
 
   state.pageInfo = pageInfo
   state.pageEnteredAt = now
-  state.pageCheckpointEligibleAt = now + PAGE_CHECKPOINT_DELAY_MS
+  state.pageCheckpointEligibleAt = isPageEvaluationReady(pageInfo)
+    ? now + PAGE_CHECKPOINT_DELAY_MS
+    : null
   state.lastTriggeredDwellBoundary = 0
   state.activeDwellSeconds = 0
   state.lastPulseAt = now
@@ -262,6 +289,16 @@ export function createBackgroundRuntime(deps: BackgroundRuntimeDeps) {
       return
     }
 
+    if (!isPageEvaluationReady(state.pageInfo)) {
+      debugLog("CHECKPOINT", `⏭️ [${tabId}] 跳过 ${triggerReason}：${getPageQualitySkipLabel(state.pageInfo)} (${state.pageInfo.adapter_id}/${getPageReadiness(state.pageInfo)}/${state.pageInfo.quality_reason ?? "no_reason"})`, {
+        triggerReason,
+        adapterId: state.pageInfo.adapter_id ?? "generic",
+        readiness: getPageReadiness(state.pageInfo),
+        reason: state.pageInfo.quality_reason ?? null
+      })
+      return
+    }
+
     const settings = await deps.getSettings()
     if (!settings?.enabled || !settings.apiKey || !settings.apiUrl) {
       debugLog("LLM", `⏸️ [${tabId}] 跳过 ${triggerReason}：缺少设置或服务关闭`)
@@ -358,6 +395,10 @@ export function createBackgroundRuntime(deps: BackgroundRuntimeDeps) {
     const state = tabStates.get(tabId)
     if (!state) return
 
+    if (!isPageEvaluationReady(state.pageInfo)) {
+      return
+    }
+
     if (shouldTriggerPageCheckpoint({
       isVisible: state.isVisible,
       isFocused: state.isFocused,
@@ -388,6 +429,17 @@ export function createBackgroundRuntime(deps: BackgroundRuntimeDeps) {
       activeDwellSeconds: state.activeDwellSeconds,
       lastTriggeredDwellBoundary: state.lastTriggeredDwellBoundary
     })) {
+      state.lastTriggeredDwellBoundary = getDwellBoundary(state.activeDwellSeconds)
+      if (!isPageEvaluationReady(state.pageInfo)) {
+        debugLog("CHECKPOINT", `⏭️ [${tabId}] 跳过 dwell_checkpoint：${getPageQualitySkipLabel(state.pageInfo)} (${state.pageInfo.adapter_id}/${getPageReadiness(state.pageInfo)}/${state.pageInfo.quality_reason ?? "no_reason"})`, {
+          triggerReason: "dwell_checkpoint",
+          adapterId: state.pageInfo.adapter_id ?? "generic",
+          readiness: getPageReadiness(state.pageInfo),
+          reason: state.pageInfo.quality_reason ?? null
+        })
+        return
+      }
+
       debugLog("CHECKPOINT", `✅ [${tabId}] dwell_checkpoint 条件通过`, {
         triggerReason: "dwell_checkpoint",
         isVisible: state.isVisible,
@@ -396,8 +448,6 @@ export function createBackgroundRuntime(deps: BackgroundRuntimeDeps) {
         activeDwellSeconds: state.activeDwellSeconds,
         lastTriggeredDwellBoundary: state.lastTriggeredDwellBoundary
       })
-      state.lastTriggeredDwellBoundary =
-        Math.floor(state.activeDwellSeconds / 60) * 60
       await runInference(tabId, "dwell_checkpoint", now)
     }
   }
@@ -419,6 +469,14 @@ export function createBackgroundRuntime(deps: BackgroundRuntimeDeps) {
       debugLog("PERCEPTION", `📄 [${tabId}] 内容就绪: ${pageInfo.title}`)
       debugLog("PERCEPTION", `   URL: ${pageInfo.url}`)
       debugLog("PERCEPTION", `   Meta: ${pageInfo.meta.slice(0, 80)}...`)
+      if (!isPageEvaluationReady(pageInfo)) {
+        debugLog("CHECKPOINT", `⏭️ [${tabId}] 跳过 page_checkpoint：${getPageQualitySkipLabel(pageInfo)} (${pageInfo.adapter_id}/${getPageReadiness(pageInfo)}/${pageInfo.quality_reason ?? "no_reason"})`, {
+          triggerReason: "page_checkpoint",
+          adapterId: pageInfo.adapter_id ?? "generic",
+          readiness: getPageReadiness(pageInfo),
+          reason: pageInfo.quality_reason ?? null
+        })
+      }
     },
     handleVisibilityChange(tabId: number, visible: boolean) {
       const state = tabStates.get(tabId)

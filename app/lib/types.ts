@@ -16,12 +16,18 @@ export interface GoalSuggestion {
   updatedAt: number
 }
 
+export type PageEvaluationReadiness = "ready" | "not_ready" | "low_info"
+
 export interface PageInfo {
   title: string
   meta: string
   url: string
   excerpt?: string
   timestamp: number
+  adapter_id?: string
+  evaluation_readiness?: PageEvaluationReadiness
+  evaluation_ready?: boolean
+  quality_reason?: string
 }
 
 export type TriggerReason = "page_checkpoint" | "dwell_checkpoint"

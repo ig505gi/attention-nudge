@@ -26,6 +26,7 @@ interface Props {
   topOffsetPx?: number
   pulseMode?: "off" | "soft" | "medium"
   onClose?: (choice: "primary" | "secondary") => void
+  onCopyDebugLogs?: () => void | Promise<void> | number | Promise<number>
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -166,6 +167,39 @@ function createStyles(
       background: secondaryHover,
       color: text
     },
+    btnDebug: {
+      padding: "8px 10px",
+      borderRadius: 12,
+      cursor: "pointer",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      fontSize: 12,
+      fontWeight: 650,
+      transition: "all 0.18s ease",
+      fontFamily: FONT_BODY,
+      textAlign: "center" as const,
+      lineHeight: 1.2,
+      minWidth: compact ? 0 : 96,
+      flex: compact ? "1 1 100%" : "0 0 auto",
+      maxWidth: "100%",
+      whiteSpace: "normal" as const,
+      overflowWrap: "anywhere" as const,
+      wordBreak: "break-word" as const,
+      background: isDark ? "rgba(18, 26, 42, 0.72)" : "rgba(255, 255, 255, 0.7)",
+      color: isDark ? "#BFD0EC" : "#5F7188",
+      border: `1px solid ${isDark ? "rgba(170, 185, 216, 0.2)" : "rgba(44, 49, 64, 0.13)"}`,
+      boxShadow: isDark ? "inset 0 1px 0 rgba(255, 255, 255, 0.03)" : "inset 0 1px 0 rgba(255, 255, 255, 0.7)"
+    },
+    btnDebugHover: {
+      background: isDark ? "rgba(30, 42, 66, 0.88)" : "rgba(249, 252, 255, 0.96)",
+      color: text
+    },
+    btnDebugDisabled: {
+      cursor: "default",
+      opacity: 0.72
+    },
     iconStroke,
     shadow,
     pulseShadow
@@ -180,12 +214,14 @@ export default function InterventionToast({
   entryDurationMs,
   topOffsetPx,
   pulseMode = "soft",
-  onClose
+  onClose,
+  onCopyDebugLogs
 }: Props) {
   const [closed, setClosed] = useState(false)
   const [hoveredBtn, setHoveredBtn] = useState<string | null>(null)
   const [themeMode, setThemeMode] = useState<"light" | "dark">(forceTheme ?? "light")
   const [compact, setCompact] = useState(false)
+  const [debugCopyState, setDebugCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle")
 
   // Pick random buttons
   const options = useMemo<[string, string]>(() => {
@@ -248,6 +284,26 @@ export default function InterventionToast({
     onClose?.(choice)
   }
 
+  const handleCopyDebugLogs = async () => {
+    if (!onCopyDebugLogs || debugCopyState === "copying") return
+
+    setDebugCopyState("copying")
+    try {
+      await onCopyDebugLogs()
+      setDebugCopyState("copied")
+    } catch {
+      setDebugCopyState("failed")
+    }
+  }
+
+  const debugCopyLabel =
+    debugCopyState === "copying"
+      ? "复制中"
+      : debugCopyState === "copied"
+        ? "已复制"
+        : debugCopyState === "failed"
+          ? "复制失败"
+          : "复制日志"
   const primaryStyle = {
     ...s.btnBase,
     ...s.btnPrimary,
@@ -257,6 +313,11 @@ export default function InterventionToast({
     ...s.btnBase,
     ...s.btnSecondary,
     ...(hoveredBtn === "secondary" ? s.btnSecondaryHover : {}),
+  }
+  const debugStyle = {
+    ...s.btnDebug,
+    ...(hoveredBtn === "debug" ? s.btnDebugHover : {}),
+    ...(debugCopyState === "copying" ? s.btnDebugDisabled : {})
   }
 
   return (
@@ -308,6 +369,34 @@ export default function InterventionToast({
 
           {/* RPG Action buttons */}
           <div style={s.actions}>
+            {onCopyDebugLogs ? (
+              <button
+                type="button"
+                style={debugStyle}
+                onClick={handleCopyDebugLogs}
+                onMouseEnter={() => setHoveredBtn("debug")}
+                onMouseLeave={() => setHoveredBtn(null)}
+                disabled={debugCopyState === "copying"}
+                aria-label={debugCopyLabel}
+                title="复制最近调试日志"
+              >
+                <svg
+                  aria-hidden="true"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+                <span>{debugCopyLabel}</span>
+              </button>
+            ) : null}
             <button
               style={primaryStyle}
               onClick={() => handleClose("primary")}

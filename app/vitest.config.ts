@@ -11,6 +11,12 @@ export default defineConfig({
       "~": resolve(__dirname, "./")
     }
   },
+  oxc: {
+    jsx: {
+      runtime: "automatic",
+      importSource: "react"
+    }
+  },
   test: {
     environment: "node",
     globals: true,

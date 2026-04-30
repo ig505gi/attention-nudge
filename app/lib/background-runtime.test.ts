@@ -362,4 +362,61 @@ describe("background runtime reliability", () => {
       })
     )
   })
+
+  it("does not schedule page checkpoints for pages that are not evaluation ready", async () => {
+    const { runtime } = createRuntime()
+
+    runtime.handlePageReady(16, {
+      title: "ChatGPT",
+      meta: "",
+      url: "https://chatgpt.com/",
+      adapter_id: "chatgpt",
+      evaluation_readiness: "not_ready",
+      evaluation_ready: false,
+      quality_reason: "empty_conversation"
+    }, true)
+
+    const state = runtime.getTabStateForTest(16)
+
+    expect(state?.pageCheckpointEligibleAt).toBeNull()
+  })
+
+  it("skips page and dwell inference for low info pages", async () => {
+    const callLLM = vi.fn().mockResolvedValue(nudgeResponse)
+    const { deps, runtime, advance } = createRuntime({ callLLM })
+
+    runtime.handlePageReady(17, {
+      title: "React 状态管理 - ChatGPT",
+      meta: "",
+      url: "https://chatgpt.com/c/abc",
+      adapter_id: "chatgpt",
+      evaluation_readiness: "low_info",
+      evaluation_ready: false,
+      quality_reason: "missing_conversation_excerpt"
+    }, true)
+    runtime.handleVisibilityChange(17, true)
+    runtime.handleWindowFocusChange(17, true)
+
+    for (let index = 0; index < 7; index += 1) {
+      advance(10_000)
+      await runtime.handleRuntimePulse(17, {
+        isVisible: true,
+        isFocused: true,
+        hasMedia: false,
+        interactionLevel: "low",
+        scrollLevel: "low"
+      })
+    }
+
+    expect(callLLM).not.toHaveBeenCalled()
+    expect(deps.debugLog).toHaveBeenCalledWith(
+      "CHECKPOINT",
+      expect.stringContaining("跳过 dwell_checkpoint：页面信息低质量"),
+      expect.objectContaining({
+        adapterId: "chatgpt",
+        readiness: "low_info",
+        reason: "missing_conversation_excerpt"
+      })
+    )
+  })
 })

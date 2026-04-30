@@ -166,6 +166,89 @@ export function createInteractionSampler(options: {
   }
 }
 
+export function runWhenDocumentReady(options: {
+  document: Pick<Document, "readyState" | "addEventListener" | "removeEventListener">
+  run: () => void
+}): () => void {
+  let disposed = false
+  let pending = false
+
+  const runOnce = () => {
+    if (disposed) return
+    pending = false
+    options.run()
+  }
+
+  if (options.document.readyState === "loading") {
+    pending = true
+    options.document.addEventListener("DOMContentLoaded", runOnce, { once: true })
+    return () => {
+      disposed = true
+      if (!pending) return
+      pending = false
+      options.document.removeEventListener("DOMContentLoaded", runOnce)
+    }
+  }
+
+  options.run()
+  return () => {
+    disposed = true
+  }
+}
+
+export function createContentServiceController(options: {
+  getEnabled: () => Promise<boolean>
+  start: () => () => void
+  subscribeToEnabledChange: (listener: (enabled: boolean) => void) => () => void
+  onError?: (error: unknown) => void
+}) {
+  let monitoringCleanup: (() => void) | null = null
+  let disposed = false
+  let enabledChangeCount = 0
+
+  const stopMonitoring = () => {
+    if (!monitoringCleanup) return
+    monitoringCleanup()
+    monitoringCleanup = null
+  }
+
+  const applyEnabled = (enabled: boolean) => {
+    if (disposed) return
+
+    if (!enabled) {
+      stopMonitoring()
+      return
+    }
+
+    if (monitoringCleanup) return
+    monitoringCleanup = options.start()
+  }
+
+  const unsubscribe = options.subscribeToEnabledChange((enabled) => {
+    enabledChangeCount += 1
+    applyEnabled(enabled)
+  })
+
+  return {
+    async init() {
+      const initialReadChangeCount = enabledChangeCount
+      try {
+        const enabled = await options.getEnabled()
+        if (enabledChangeCount === initialReadChangeCount) {
+          applyEnabled(enabled)
+        }
+      } catch (error) {
+        options.onError?.(error)
+      }
+    },
+    dispose() {
+      disposed = true
+      unsubscribe()
+      stopMonitoring()
+    }
+  }
+}
+
 export function installSpaNavigationListener(options: {
   history: Pick<History, "pushState" | "replaceState">
   eventTarget: Pick<Window, "addEventListener" | "removeEventListener">

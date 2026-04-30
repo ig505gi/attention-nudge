@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest"
 import {
   collectPageInfo,
+  createContentServiceController,
   createPageReadyDeduper,
   createInteractionSampler,
   installSpaNavigationListener,
+  runWhenDocumentReady,
   sanitizePageTitle
 } from "./content-runtime"
 
@@ -176,5 +178,108 @@ describe("content runtime interaction sampling", () => {
     }
 
     expect(sampler.snapshotAndReset().scrollLevel).toBe("high")
+  })
+})
+
+describe("content runtime service lifecycle", () => {
+  it("starts and stops page monitoring when the service enabled setting changes", async () => {
+    let enabledListener: ((enabled: boolean) => void) | null = null
+    const unsubscribe = vi.fn()
+    const cleanupMonitoring = vi.fn()
+    const startMonitoring = vi.fn(() => cleanupMonitoring)
+    const subscribeToEnabledChange = vi.fn((listener: (enabled: boolean) => void) => {
+      enabledListener = listener
+      return unsubscribe
+    })
+
+    const controller = createContentServiceController({
+      getEnabled: vi.fn().mockResolvedValue(false),
+      start: startMonitoring,
+      subscribeToEnabledChange
+    })
+
+    await controller.init()
+
+    expect(startMonitoring).not.toHaveBeenCalled()
+    expect(subscribeToEnabledChange).toHaveBeenCalledTimes(1)
+
+    enabledListener?.(true)
+    enabledListener?.(true)
+
+    expect(startMonitoring).toHaveBeenCalledTimes(1)
+    expect(cleanupMonitoring).not.toHaveBeenCalled()
+
+    enabledListener?.(false)
+    enabledListener?.(false)
+
+    expect(cleanupMonitoring).toHaveBeenCalledTimes(1)
+
+    enabledListener?.(true)
+
+    expect(startMonitoring).toHaveBeenCalledTimes(2)
+
+    controller.dispose()
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+    expect(cleanupMonitoring).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not let a delayed initial read override a newer enabled change", async () => {
+    let enabledListener: ((enabled: boolean) => void) | null = null
+    let resolveInitialEnabled: ((enabled: boolean) => void) | null = null
+    const cleanupMonitoring = vi.fn()
+    const startMonitoring = vi.fn(() => cleanupMonitoring)
+
+    const controller = createContentServiceController({
+      getEnabled: vi.fn(() => new Promise<boolean>((resolve) => {
+        resolveInitialEnabled = resolve
+      })),
+      start: startMonitoring,
+      subscribeToEnabledChange: (listener) => {
+        enabledListener = listener
+        return vi.fn()
+      }
+    })
+
+    const initPromise = controller.init()
+
+    enabledListener?.(true)
+    resolveInitialEnabled?.(false)
+    await initPromise
+
+    expect(startMonitoring).toHaveBeenCalledTimes(1)
+    expect(cleanupMonitoring).not.toHaveBeenCalled()
+  })
+})
+
+describe("content runtime document readiness", () => {
+  it("removes a pending DOMContentLoaded listener when monitoring stops before the page is ready", () => {
+    let domReadyListener: (() => void) | null = null
+    const documentRef = {
+      readyState: "loading",
+      addEventListener: vi.fn((_type: string, listener: () => void) => {
+        domReadyListener = listener
+      }),
+      removeEventListener: vi.fn((type: string, listener: () => void) => {
+        if (type === "DOMContentLoaded" && listener === domReadyListener) {
+          domReadyListener = null
+        }
+      })
+    }
+    const run = vi.fn()
+
+    const cleanup = runWhenDocumentReady({
+      document: documentRef,
+      run
+    })
+
+    cleanup()
+    domReadyListener?.()
+
+    expect(run).not.toHaveBeenCalled()
+    expect(documentRef.removeEventListener).toHaveBeenCalledWith(
+      "DOMContentLoaded",
+      expect.any(Function)
+    )
   })
 })
