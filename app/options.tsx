@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from "react"
 import InterventionToast from "~/components/InterventionToast"
-import { getSettings, saveSettings } from "~/lib/storage"
-import type { Settings } from "~/lib/types"
+import {
+  clearGoalSuggestion,
+  getGoalSuggestion,
+  getSettings,
+  getUserGoal,
+  saveSettings,
+  saveUserGoal
+} from "~/lib/storage"
+import type { GoalSuggestion, Settings } from "~/lib/types"
 
 type ThemeMode = "light" | "dark"
 type ThemePreference = "system" | "light" | "dark"
@@ -235,9 +242,9 @@ function createStyles(theme: ReturnType<typeof createTheme>, focused: string | n
       minHeight: 0
     },
     topbar: {
-      display: "flex",
+      display: "flex" as const,
       alignItems: compact ? "stretch" : "center",
-      flexDirection: compact ? "column" : "row",
+      flexDirection: compact ? ("column" as const) : ("row" as const),
       justifyContent: "space-between",
       gap: 14,
       padding: "18px 22px",
@@ -409,6 +416,48 @@ function createStyles(theme: ReturnType<typeof createTheme>, focused: string | n
       marginTop: 7,
       lineHeight: 1.48
     },
+    suggestionBox: {
+      marginTop: 10,
+      padding: "11px 12px",
+      borderRadius: 13,
+      border: `1px solid ${theme.chipBorder}`,
+      background: theme.chipBg
+    },
+    suggestionText: {
+      margin: 0,
+      fontSize: 12,
+      lineHeight: 1.5,
+      color: theme.chipText,
+      overflowWrap: "anywhere" as const
+    },
+    suggestionActions: {
+      display: "flex",
+      gap: 8,
+      marginTop: 10,
+      flexWrap: "wrap" as const
+    },
+    suggestionButton: {
+      padding: "8px 11px",
+      borderRadius: 11,
+      border: `1px solid ${theme.chipActiveBorder}`,
+      background: theme.chipActiveBg,
+      color: theme.chipActiveText,
+      fontSize: 12,
+      fontWeight: 650,
+      cursor: "pointer",
+      transition: "all 0.18s ease"
+    },
+    suggestionDismissButton: {
+      padding: "8px 11px",
+      borderRadius: 11,
+      border: `1px solid ${theme.chipBorder}`,
+      background: "transparent",
+      color: theme.chipText,
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+      transition: "all 0.18s ease"
+    },
     previewButton: {
       marginTop: 12,
       width: "100%",
@@ -545,6 +594,8 @@ function createStyles(theme: ReturnType<typeof createTheme>, focused: string | n
 }
 
 export default function OptionsPage() {
+  const [goal, setGoal] = useState("")
+  const [goalSuggestion, setGoalSuggestion] = useState<GoalSuggestion | null>(null)
   const [apiKey, setApiKey] = useState("")
   const [apiUrl, setApiUrl] = useState("")
   const [model, setModel] = useState("deepseek-chat")
@@ -568,12 +619,17 @@ export default function OptionsPage() {
   const [toastPrefsLoaded, setToastPrefsLoaded] = useState(false)
 
   useEffect(() => {
-    getSettings().then((s) => {
-      if (!s) return
-      setApiKey(s.apiKey ?? "")
-      setApiUrl(s.apiUrl ?? "")
-      setModel(s.model ?? "deepseek-chat")
-      setDebugMode(s.debugMode ?? false)
+    Promise.all([getSettings(), getUserGoal(), getGoalSuggestion()]).then(([s, g, suggestion]) => {
+      if (s) {
+        setApiKey(s.apiKey ?? "")
+        setApiUrl(s.apiUrl ?? "")
+        setModel(s.model ?? "deepseek-chat")
+        setDebugMode(s.debugMode ?? false)
+      }
+      if (g) {
+        setGoal(g.goal ?? "")
+      }
+      setGoalSuggestion(suggestion)
     })
   }, [])
 
@@ -766,10 +822,33 @@ export default function OptionsPage() {
     })
 
     await saveSettings(next)
+    const trimmedGoal = goal.trim()
+    await saveUserGoal(trimmedGoal)
+    if (trimmedGoal) {
+      await clearGoalSuggestion()
+      setGoalSuggestion(null)
+    }
     chrome.runtime.sendMessage({ type: "DEBUG_MODE_CHANGED", payload: { debugMode } })
 
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
+  }
+
+  const handleAcceptGoalSuggestion = async () => {
+    const nextGoal = goalSuggestion?.goal.trim()
+    if (!nextGoal) return
+
+    setGoal(nextGoal)
+    await saveUserGoal(nextGoal)
+    await clearGoalSuggestion()
+    setGoalSuggestion(null)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  const handleDismissGoalSuggestion = async () => {
+    await clearGoalSuggestion()
+    setGoalSuggestion(null)
   }
 
   const handlePreviewToast = () => {
@@ -797,6 +876,7 @@ export default function OptionsPage() {
 
   const theme = useMemo(() => createTheme(themeMode), [themeMode])
   const styles = useMemo(() => createStyles(theme, focused, saved, compact), [theme, focused, saved, compact])
+  const visibleGoalSuggestion = !goal.trim() ? goalSuggestion?.goal.trim() : ""
 
   return (
     <div style={styles.page}>
@@ -843,7 +923,34 @@ export default function OptionsPage() {
             {section === "basic" ? (
               <>
                 <h1 style={styles.heading}>模型配置</h1>
-                <p style={styles.subtitle}>设置 API URL、API Key 与模型名称。</p>
+                <p style={styles.subtitle}>设置可选目标、API URL、API Key 与模型名称。</p>
+
+                <section style={styles.section}>
+                  <label style={styles.label}>当前目标（可选）</label>
+                  <input
+                    type="text"
+                    value={goal}
+                    onChange={(e) => setGoal(e.target.value)}
+                    placeholder="例如：完成本周需求评审"
+                    style={styles.input("goal")}
+                    onFocus={() => setFocused("goal")}
+                    onBlur={() => setFocused(null)}
+                  />
+                  <div style={styles.helperStandalone}>不填写也可以开启，系统会先安静观察。</div>
+                  {visibleGoalSuggestion ? (
+                    <div style={styles.suggestionBox}>
+                      <p style={styles.suggestionText}>可能在做：{visibleGoalSuggestion}</p>
+                      <div style={styles.suggestionActions}>
+                        <button type="button" onClick={handleAcceptGoalSuggestion} style={styles.suggestionButton}>
+                          使用这个目标
+                        </button>
+                        <button type="button" onClick={handleDismissGoalSuggestion} style={styles.suggestionDismissButton}>
+                          忽略
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </section>
 
                 <section style={styles.section}>
                   <label style={styles.label}>API URL</label>

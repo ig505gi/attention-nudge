@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react"
-import { getSettings, saveSettings, getUserGoal, saveUserGoal } from "~/lib/storage"
-import type { Settings } from "~/lib/types"
+import {
+  clearGoalSuggestion,
+  getGoalSuggestion,
+  getSettings,
+  saveSettings,
+  getUserGoal,
+  saveUserGoal
+} from "~/lib/storage"
+import type { GoalSuggestion, Settings } from "~/lib/types"
 
 const GOAL_DEBOUNCE_MS = 500
 const THEME_PREF_STORAGE_KEY = "optionsThemePreference"
@@ -208,6 +215,52 @@ function createStyles(theme: ReturnType<typeof createTheme>, focused: string | n
       transition: "all 0.2s ease",
       boxShadow: focused === "goal" ? theme.inputFocusRing : "none"
     },
+    goalHint: {
+      display: "block",
+      marginTop: 8,
+      fontSize: 11.5,
+      color: theme.helper,
+      lineHeight: 1.48
+    },
+    suggestionBox: {
+      marginTop: 10,
+      padding: "10px 11px",
+      border: `1px solid ${theme.ghostBorder}`,
+      borderRadius: 12,
+      background: theme.ghostBg
+    },
+    suggestionText: {
+      margin: 0,
+      fontSize: 11.5,
+      lineHeight: 1.45,
+      color: theme.ghostText,
+      overflowWrap: "anywhere" as const
+    },
+    suggestionActions: {
+      display: "flex",
+      gap: 8,
+      marginTop: 9
+    },
+    suggestionButton: {
+      padding: "7px 10px",
+      borderRadius: 10,
+      border: `1px solid ${theme.ghostBorder}`,
+      background: theme.accentBg,
+      color: theme.accentText,
+      fontSize: 11.5,
+      fontWeight: 650,
+      cursor: "pointer"
+    },
+    suggestionDismissButton: {
+      padding: "7px 10px",
+      borderRadius: 10,
+      border: `1px solid ${theme.ghostBorder}`,
+      background: "transparent",
+      color: theme.ghostText,
+      fontSize: 11.5,
+      fontWeight: 600,
+      cursor: "pointer"
+    },
     footer: {
       fontSize: 10.5,
       color: theme.helper,
@@ -233,6 +286,7 @@ function createStyles(theme: ReturnType<typeof createTheme>, focused: string | n
 function IndexPopup() {
   const [enabled, setEnabled] = useState(true)
   const [goal, setGoal] = useState("")
+  const [goalSuggestion, setGoalSuggestion] = useState<GoalSuggestion | null>(null)
   const [isReady, setIsReady] = useState(false)
   const [lastSavedEnabled, setLastSavedEnabled] = useState<boolean | null>(null)
   const [lastSavedGoal, setLastSavedGoal] = useState<string | null>(null)
@@ -363,7 +417,11 @@ function IndexPopup() {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [s, g] = await Promise.all([getSettings(), getUserGoal()])
+      const [s, g, suggestion] = await Promise.all([
+        getSettings(),
+        getUserGoal(),
+        getGoalSuggestion()
+      ])
       if (cancelled) return
 
       const initialEnabled = s?.enabled ?? true
@@ -371,6 +429,7 @@ function IndexPopup() {
 
       setEnabled(initialEnabled)
       setGoal(initialGoal)
+      setGoalSuggestion(suggestion)
       setLastSavedEnabled(initialEnabled)
       setLastSavedGoal(initialGoal)
       setIsReady(true)
@@ -409,6 +468,10 @@ function IndexPopup() {
 
     const timer = setTimeout(async () => {
       await saveUserGoal(goal)
+      if (goal.trim()) {
+        await clearGoalSuggestion()
+        setGoalSuggestion(null)
+      }
       setLastSavedGoal(goal)
     }, GOAL_DEBOUNCE_MS)
 
@@ -421,8 +484,25 @@ function IndexPopup() {
     chrome.runtime.openOptionsPage()
   }
 
+  const handleAcceptGoalSuggestion = async () => {
+    const nextGoal = goalSuggestion?.goal.trim()
+    if (!nextGoal) return
+
+    setGoal(nextGoal)
+    await saveUserGoal(nextGoal)
+    await clearGoalSuggestion()
+    setGoalSuggestion(null)
+    setLastSavedGoal(nextGoal)
+  }
+
+  const handleDismissGoalSuggestion = async () => {
+    await clearGoalSuggestion()
+    setGoalSuggestion(null)
+  }
+
   const theme = useMemo(() => createTheme(themeMode), [themeMode])
   const styles = useMemo(() => createStyles(theme, focused), [theme, focused])
+  const visibleGoalSuggestion = !goal.trim() ? goalSuggestion?.goal.trim() : ""
 
   return (
     <div style={styles.container}>
@@ -453,7 +533,7 @@ function IndexPopup() {
         <hr style={styles.divider} />
 
         <section style={styles.section}>
-          <label style={styles.label}>今天最想完成的事</label>
+          <label style={styles.label}>当前目标（可选）</label>
           <input
             type="text"
             value={goal}
@@ -463,6 +543,20 @@ function IndexPopup() {
             onFocus={() => setFocused("goal")}
             onBlur={() => setFocused(null)}
           />
+          <span style={styles.goalHint}>不填写也可以开启，系统会先安静观察。</span>
+          {visibleGoalSuggestion ? (
+            <div style={styles.suggestionBox}>
+              <p style={styles.suggestionText}>可能在做：{visibleGoalSuggestion}</p>
+              <div style={styles.suggestionActions}>
+                <button type="button" onClick={handleAcceptGoalSuggestion} style={styles.suggestionButton}>
+                  使用
+                </button>
+                <button type="button" onClick={handleDismissGoalSuggestion} style={styles.suggestionDismissButton}>
+                  忽略
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
 
         <button onClick={handleOpenOptions} style={styles.primaryButton}>

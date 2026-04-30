@@ -15,6 +15,7 @@
 - 复杂理解尽量交给 LLM
 - 本地代码只负责“何时检查”和“提供什么证据”
 - 本地代码不做复杂认知状态分类
+- `No-Goal Entry Flow` 是 MVP 正式能力
 
 一句话概括：
 
@@ -38,7 +39,15 @@
 
 - 当前是否仍与目标对齐
 - 当前大致处于哪种浏览模式
-- 是否需要提醒
+- 可选的候选干预文案
+- 可选的目标草稿
+
+当用户没有设置目标时：
+
+- 系统仍然使用同一套 checkpoint
+- LLM 不再强行做“目标对齐”判断
+- 改为判断当前浏览是否连贯、是否值得温和地帮助用户明确目标
+- 本地策略决定是否显示 `icebreaker`
 
 因此，MVP 的正式定义为：
 
@@ -48,7 +57,7 @@
 
 ## MVP Trigger
 
-MVP 只保留 3 个触发器。
+MVP 只保留 2 个触发器。
 
 ### 1. `page_checkpoint`
 
@@ -84,23 +93,6 @@ MVP 只保留 3 个触发器。
 - 判断用户是在持续推进，还是已经偏离
 - 区分深读/深看与无意义停留
 
-### 3. `followup_checkpoint`
-
-含义：
-提醒之后，延迟一段时间再检查一次。
-
-建议规则：
-
-- 上一轮动作是 `nudge` 或 `icebreaker`
-- 在 `45-60s` 后触发一次 follow-up
-
-作用：
-
-- 检查提醒是否有效
-- 避免连续即时打扰
-
----
-
 ## Trigger Design Boundary
 
 MVP 中，trigger 只回答一个问题：
@@ -124,11 +116,47 @@ trigger 不负责回答：
 
 ---
 
+## No-Goal Entry Flow
+
+无目标模式是 MVP 正式能力，而不是后续增强项。
+
+设计目标：
+
+- 用户即使没有预先设定目标，也能正常使用插件
+- 系统不因为“没有目标”就停止判断
+- 只有在 LLM 认为用户明显失去方向时，才发起一次温和提问
+
+规则很简单：
+
+- `goal` 允许为空
+- trigger 仍然只用 `page_checkpoint`、`dwell_checkpoint`
+- LLM 在无目标模式下主要看：
+  - 当前浏览是否连贯
+  - 最近几页是否像是有意识探索
+  - 用户是否可能需要帮助明确一个目标
+
+推荐输出约束：
+
+- 无目标模式下，`alignment_state` 通常返回 `uncertain`
+- 无目标模式下，默认不提供候选干预文案
+- 只有当提问明显会帮助用户时，才填写 `icebreaker_message`
+- 如果浏览看起来连贯，可以填写 `suggested_goal` 作为安静目标草稿
+
+---
+
 ## LLM Input
 
-MVP 输入只保留 5 组字段。
+MVP 输入只保留 6 个顶层字段。
 
-### 1. `goal`
+### 1. `trigger_reason`
+
+```ts
+type TriggerReasonInput = {
+  trigger_reason: "page_checkpoint" | "dwell_checkpoint"
+}
+```
+
+### 2. `goal`
 
 ```ts
 type GoalInput = {
@@ -136,7 +164,7 @@ type GoalInput = {
 }
 ```
 
-### 2. `current_page`
+### 3. `current_page`
 
 ```ts
 type CurrentPageInput = {
@@ -152,7 +180,7 @@ type CurrentPageInput = {
 - `excerpt` 拿不到可以为空
 - 不要求 MVP 完整正文抽取
 
-### 3. `browser_context`
+### 4. `browser_context`
 
 ```ts
 type BrowserContextInput = {
@@ -163,7 +191,7 @@ type BrowserContextInput = {
 }
 ```
 
-### 4. `behavior_summary`
+### 5. `behavior_summary`
 
 ```ts
 type BehaviorSummaryInput = {
@@ -179,7 +207,7 @@ type BehaviorSummaryInput = {
 - 只保留粗粒度分档
 - 不保留高频原始事件明细
 
-### 5. `recent_pages`
+### 6. `recent_pages`
 
 ```ts
 type RecentPageInput = {
@@ -205,10 +233,11 @@ MVP 不要求 LLM 直接输出复杂认知态枚举。
 ```ts
 type MVPStateInference = {
   alignment_state: "on_track" | "drifting" | "off_track" | "uncertain"
-  mode_hint: "search" | "deep_dive" | "feed" | "video" | "break" | "unknown"
+  mode_hint: "search" | "deep_dive" | "feed" | "video" | "break" | "explore" | "unknown"
   confidence: number
-  action: "silent" | "nudge" | "icebreaker"
-  message: string
+  nudge_message?: string | null
+  icebreaker_message?: string | null
+  suggested_goal?: string | null
 }
 ```
 
@@ -216,14 +245,23 @@ type MVPStateInference = {
 
 - `alignment_state`
   - 是否仍与目标对齐
+  - 无目标模式下通常返回 `uncertain`
 - `mode_hint`
   - 当前大致浏览模式，供产品和复盘使用
+  - 无目标探索时优先使用 `explore`
 - `confidence`
   - 这次判断是否可靠
-- `action`
-  - 本轮建议动作
-- `message`
-  - 面向用户的提醒文案
+- `nudge_message`
+  - 当本地策略决定展示 `nudge` 时使用的候选文案
+  - 如果当前判断不适合 `nudge`，应为 `null`
+- `icebreaker_message`
+  - 当本地策略决定展示 `icebreaker` 时使用的候选问题式文案
+  - 如果当前判断不适合 `icebreaker`，应为 `null`
+- `suggested_goal`
+  - 无目标模式下的安静目标草稿
+  - 只保存到本地，不能单独触发页面内提醒
+
+LLM 不再输出 `action`，也不输出单一最终 `message`。动作不是 LLM schema 的一部分，而是本地产品策略根据 `alignment_state`、`confidence`、是否有目标、冷却状态计算出来的结果。LLM 只提供与动作类型匹配的候选文案，最终是否采用由本地策略决定。
 
 ---
 
@@ -237,6 +275,27 @@ MVP 的本地动作规则保持极简。
 - `nudge`：轻提醒
 - `icebreaker`：更明确的问题式提醒
 
+### 本地动作计算
+
+有目标时：
+
+- `alignment_state = on_track` -> `silent`
+- `alignment_state = uncertain` -> `silent`
+- `alignment_state = drifting | off_track` 且 `confidence >= 0.6` -> `nudge`
+  - 展示 `nudge_message`
+  - 如果缺失，则使用本地兜底文案
+- 其他情况 -> `silent`
+
+无目标时：
+
+- 默认 `silent`
+- 如果 LLM 给出 `suggested_goal`，只保存为本地目标草稿，不弹窗
+- 只有当 `alignment_state = off_track` 且 `confidence >= 0.6` 时，本地才允许 `icebreaker`
+  - 展示 `icebreaker_message`
+  - 如果缺失，则使用本地兜底文案
+
+这条规则保证 LLM 仍负责语义判断和候选话术，但“是否打断用户”由稳定、可测试的本地策略控制。
+
 ### 单一冷却
 
 建议：
@@ -249,7 +308,6 @@ MVP 的本地动作规则保持极简。
 建议：
 
 - 当 `confidence < 0.6` 时
-- 即使 LLM 返回 `nudge` 或 `icebreaker`
 - 本地仍统一降级为 `silent`
 
 目的：
@@ -311,9 +369,10 @@ MVP 阶段，最重要的不是让本地规则更聪明，而是：
 
 最终收敛为：
 
-- 3 个 trigger
-- 5 组输入
+- 2 个 trigger
+- 6 个顶层输入字段
 - 1 个最小输出 schema
+- 1 个无目标分支
 - 1 条单一冷却规则
 
 这就是 MVP 最合适的状态契约。

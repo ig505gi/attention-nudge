@@ -1,35 +1,48 @@
 import type { LLMRequest, LLMResponse, Settings } from "./types"
+import { appendDebugLog } from "./storage"
 
-const SYSTEM_PROMPT = `你是一个专注力领航员。你的职责是温和地帮助用户意识到当前浏览状态是否偏离了他们的主线任务。
+const SYSTEM_PROMPT = `你是一个专注力领航员。你的职责是基于页面、浏览上下文、粗行为摘要和最近页面轨迹，温和判断用户此刻是否仍在主线上。
 
 关键原则：
-1. 不要评判用户的"意志力薄弱"——即使他们在主动摸鱼，也用"迷失方向"的视角来描述
-2. 采用提问式而非命令式的温和语气
-3. 保护用户的自我效能感，给他们台阶下
+1. 不要评判用户，即使他们已经偏离，也要用温和、提问式、给台阶的表达
+2. pre-LLM 触发很薄，因此你需要综合最近页面轨迹、页面内容、媒体状态、停留时长、交互和滚动强度来理解状态
+3. 当用户没有设置目标时，不要强行判断“是否对齐目标”；改为判断当前浏览是否连贯、是否像是在有意识探索，以及是否值得温和地帮助用户明确目标
+4. 证据不足时优先保守，输出 uncertain，并把候选干预文案置为 null
+5. 你只负责语义判断和候选话术，不决定是否展示页面内提醒；是否打断用户由本地策略决定
 
 输出格式（必须是纯JSON）：
 {
-  "deviation_index": 1-5的数字,
-  "message": "一句温柔的提醒话术（不超过50个中文字符）",
-  "action": "wait" | "nudge" | "block",
-  "button_options": ["左按钮文案（认同/接受，2-10字）", "右按钮文案（调侃/给台阶，2-10字）"]
+  "alignment_state": "on_track" | "drifting" | "off_track" | "uncertain",
+  "mode_hint": "search" | "deep_dive" | "feed" | "video" | "break" | "explore" | "unknown",
+  "confidence": 0到1之间的数字,
+  "nudge_message": "当用户有目标且 drifting/off_track 时的候选轻提醒文案，否则为 null",
+  "icebreaker_message": "当用户未设置目标且明显失去方向时的候选问题式文案，否则为 null",
+  "suggested_goal": "当用户未设置目标且你能高置信概括当前方向时填写，否则为 null"
 }
 
-字数要求：message 最多 50 字，button_options 每项 2-10 字。
+字数要求：nudge_message 和 icebreaker_message 最多 50 字。
 
-deviation_index 定义：
-1 = 完全相关（如正在查阅技术文档、StackOverflow）
-2 = 略微相关但非核心（如在找灵感的相关文章）
-3 = 有些偏离（明显不是当前任务的直接内容）
-4 = 严重偏离（如在娱乐网站、视频平台）
-5 = 完全无关/无意义摸鱼
+alignment_state 定义：
+- on_track = 基本仍在主线上
+- drifting = 有点偏，但未明显脱轨
+- off_track = 明显偏离当前主线
+- uncertain = 证据不足，或当前无目标无法直接判定对齐状态
 
-action 定义：
-wait = 继续观察，不需要干预
-nudge = 轻轻提醒一下
-block = 需要更强干预（如页面变灰需确认）
+mode_hint 定义：
+- search = 查找资料/问题定位
+- deep_dive = 深读/深度处理
+- feed = 刷信息流
+- video = 看视频/媒体消费
+- break = 明显休息/切换
+- explore = 无目标下的有意识探索
+- unknown = 无法判断
 
-请根据用户目标与当前页面的语义关联度，给出判断。`
+无目标模式约束：
+- 默认输出 uncertain，nudge_message 和 icebreaker_message 为 null
+- 只有当用户明显失去方向，且提问会明显帮助用户时，才填写 icebreaker_message
+- 如果浏览看起来连贯，可以给出 suggested_goal 作为安静草稿；不要为了建议目标而填写 icebreaker_message
+
+请只输出纯 JSON。`
 
 const DEFAULT_MODEL = "deepseek-chat"
 const DEFAULT_TEMPERATURE = 0.2
@@ -37,12 +50,95 @@ const FALLBACK_TEMPERATURE = 1
 
 const modelTemperaturePreference = new Map<string, number>()
 
+type LLMChatMessage = {
+  role: "system" | "user"
+  content: string
+}
+
+type LLMRequestPayload = {
+  model: string
+  messages: LLMChatMessage[]
+  temperature: number
+}
+
 function getModelName(settings: Settings): string {
   return settings.model || DEFAULT_MODEL
 }
 
 function getModelCacheKey(settings: Settings, model: string): string {
   return `${settings.apiUrl}::${model}`
+}
+
+function formatRecentPages(request: LLMRequest): string {
+  if (request.recent_pages.length === 0) {
+    return "最近页面轨迹：无"
+  }
+
+  return [
+    "最近页面轨迹：",
+    ...request.recent_pages.map((page, index) =>
+      `${index + 1}. ${page.title} | ${page.url} | 停留 ${page.dwell_seconds} 秒`
+    )
+  ].join("\n")
+}
+
+function buildUserPrompt(request: LLMRequest): string {
+  const goalLine = request.goal ? `当前目标：${request.goal}` : "当前目标：未设置"
+  const excerptLine = request.current_page.excerpt
+    ? `页面摘要：${request.current_page.excerpt}`
+    : "页面摘要：无"
+
+  return [
+    `触发原因：${request.trigger_reason}`,
+    goalLine,
+    `当前页面标题：${request.current_page.title}`,
+    `当前页面 URL：${request.current_page.url}`,
+    `页面描述：${request.current_page.meta || "无"}`,
+    excerptLine,
+    `页面可见：${request.browser_context.is_visible ? "是" : "否"}`,
+    `窗口聚焦：${request.browser_context.is_focused ? "是" : "否"}`,
+    `系统状态：${request.browser_context.idle_state}`,
+    `媒体播放：${request.browser_context.has_media ? "是" : "否"}`,
+    `总停留时长：${request.behavior_summary.dwell_seconds}秒`,
+    `有效停留时长：${request.behavior_summary.active_dwell_seconds}秒`,
+    `交互强度：${request.behavior_summary.interaction_level}`,
+    `滚动强度：${request.behavior_summary.scroll_level}`,
+    formatRecentPages(request)
+  ].join("\n")
+}
+
+function buildMessages(request: LLMRequest): LLMChatMessage[] {
+  return [
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: buildUserPrompt(request)
+    }
+  ]
+}
+
+function buildRequestPayload(request: LLMRequest, model: string, temperature: number): LLMRequestPayload {
+  return {
+    model,
+    messages: buildMessages(request),
+    temperature
+  }
+}
+
+async function appendLLMChatLog(
+  settings: Settings,
+  event: string,
+  payload: Record<string, unknown>
+): Promise<void> {
+  try {
+    await appendDebugLog({
+      tag: "LLM_CHAT",
+      event,
+      payload
+    }, { force: settings.debugMode })
+  } catch {
+    // Debug logging must never change the LLM control flow.
+  }
 }
 
 function isTemperatureOneOnlyError(errorText: string): boolean {
@@ -62,9 +158,7 @@ function isTemperatureOneOnlyError(errorText: string): boolean {
 
 async function requestLLM(
   settings: Settings,
-  request: LLMRequest,
-  model: string,
-  temperature: number
+  payload: LLMRequestPayload
 ): Promise<Response> {
   return fetch(settings.apiUrl, {
     method: "POST",
@@ -72,24 +166,17 @@ async function requestLLM(
       "Content-Type": "application/json",
       Authorization: `Bearer ${settings.apiKey}`
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `用户目标：${request.user_goal}\n当前页面标题：${request.current_page.title}\n页面描述：${request.current_page.meta}\n停留时间：${request.current_page.stay_time_seconds}秒`
-        }
-      ],
-      temperature
-    })
+    body: JSON.stringify(payload)
   })
 }
 
-async function parseLLMResponse(response: Response): Promise<LLMResponse | null> {
+async function parseLLMResponse(response: Response): Promise<{
+  rawContent: string | null
+  parsed: LLMResponse | null
+}> {
   const data = await response.json()
   const content = data.choices?.[0]?.message?.content
-  if (!content) return null
+  if (!content) return { rawContent: null, parsed: null }
 
   // 解析 JSON 响应（处理 markdown 代码块包裹的情况）
   let jsonStr = content.trim()
@@ -102,7 +189,6 @@ async function parseLLMResponse(response: Response): Promise<LLMResponse | null>
   const parsed = JSON.parse(jsonStr)
 
   // 软截断：在 50 字附近找自然断点（句号/逗号/顿号）
-  const rawMsg = parsed.message || "注意偏离了主线任务哦"
   const softTruncate = (text: string, maxLen = 50) => {
     if (text.length <= maxLen) return text
     const segment = text.slice(0, maxLen + 10)
@@ -114,18 +200,44 @@ async function parseLLMResponse(response: Response): Promise<LLMResponse | null>
     return lastBreak > 10 ? text.slice(0, lastBreak + 1) : text.slice(0, maxLen) + "…"
   }
 
-  const rawOptions = parsed.button_options
-  const buttonOptions: [string, string] | undefined = rawOptions?.[0] && rawOptions?.[1]
-    ? [rawOptions[0].slice(0, 10), rawOptions[1].slice(0, 10)]
-    : undefined
+  const allowedAlignment = new Set(["on_track", "drifting", "off_track", "uncertain"])
+  const allowedModeHints = new Set(["search", "deep_dive", "feed", "video", "break", "explore", "unknown"])
+  const alignmentState = allowedAlignment.has(parsed.alignment_state)
+    ? parsed.alignment_state
+    : "uncertain"
+  const modeHint = allowedModeHints.has(parsed.mode_hint)
+    ? parsed.mode_hint
+    : "unknown"
+  const confidence = typeof parsed.confidence === "number"
+    ? Math.min(1, Math.max(0, parsed.confidence))
+    : 0.5
+  const normalizeCandidateMessage = (value: unknown) =>
+    typeof value === "string" && value.trim()
+      ? softTruncate(value.trim())
+      : null
+  const legacyMessage = typeof parsed.message === "string" && parsed.message.trim()
+    ? parsed.message.trim()
+    : null
+  const nudgeMessage = normalizeCandidateMessage(
+    parsed.nudge_message ?? (parsed.action === "nudge" ? legacyMessage : null)
+  )
+  const icebreakerMessage = normalizeCandidateMessage(
+    parsed.icebreaker_message ?? (parsed.action === "icebreaker" ? legacyMessage : null)
+  )
+  const suggestedGoal = typeof parsed.suggested_goal === "string" && parsed.suggested_goal.trim()
+    ? parsed.suggested_goal.trim().slice(0, 80)
+    : null
 
   return {
-    deviation_index: Math.min(5, Math.max(1, parsed.deviation_index || 3)),
-    message: softTruncate(rawMsg),
-    action: ["wait", "nudge", "block"].includes(parsed.action)
-      ? parsed.action
-      : "wait",
-    button_options: buttonOptions
+    rawContent: content,
+    parsed: {
+      alignment_state: alignmentState,
+      mode_hint: modeHint,
+      confidence,
+      nudge_message: nudgeMessage,
+      icebreaker_message: icebreakerMessage,
+      suggested_goal: suggestedGoal
+    }
   }
 }
 
@@ -146,10 +258,26 @@ export async function callLLM(
   const preferredTemperature = modelTemperaturePreference.get(cacheKey) ?? DEFAULT_TEMPERATURE
 
   try {
-    let response = await requestLLM(settings, request, model, preferredTemperature)
+    let payload = buildRequestPayload(request, model, preferredTemperature)
+    await appendLLMChatLog(settings, "request", {
+      model,
+      temperature: preferredTemperature,
+      triggerReason: request.trigger_reason,
+      currentPage: request.current_page,
+      messages: payload.messages
+    })
+
+    let response = await requestLLM(settings, payload)
 
     if (!response.ok) {
       const errorText = await response.text()
+      await appendLLMChatLog(settings, "api_error", {
+        model,
+        temperature: payload.temperature,
+        status: response.status,
+        errorText
+      })
+
       const shouldRetryWithFallback =
         preferredTemperature !== FALLBACK_TEMPERATURE &&
         isTemperatureOneOnlyError(errorText)
@@ -160,16 +288,53 @@ export async function callLLM(
       }
 
       modelTemperaturePreference.set(cacheKey, FALLBACK_TEMPERATURE)
-      response = await requestLLM(settings, request, model, FALLBACK_TEMPERATURE)
+      payload = buildRequestPayload(request, model, FALLBACK_TEMPERATURE)
+      await appendLLMChatLog(settings, "request", {
+        model,
+        temperature: FALLBACK_TEMPERATURE,
+        triggerReason: request.trigger_reason,
+        currentPage: request.current_page,
+        retryReason: "temperature_fallback",
+        messages: payload.messages
+      })
+      response = await requestLLM(settings, payload)
     }
 
     if (!response.ok) {
+      await appendLLMChatLog(settings, "api_error", {
+        model,
+        temperature: payload.temperature,
+        status: response.status
+      })
       console.error("LLM API error:", response.status)
       return null
     }
 
-    return await parseLLMResponse(response)
+    const { rawContent, parsed } = await parseLLMResponse(response)
+    if (!parsed) {
+      await appendLLMChatLog(settings, "response", {
+        model,
+        temperature: payload.temperature,
+        rawContent,
+        parsed: null
+      })
+      return null
+    }
+
+    await appendLLMChatLog(settings, "response", {
+      model,
+      temperature: payload.temperature,
+      rawContent,
+      parsed
+    })
+
+    return parsed
   } catch (err) {
+    await appendLLMChatLog(settings, "exception", {
+      model,
+      triggerReason: request.trigger_reason,
+      error: err
+    })
     console.error("LLM call failed:", err)
     return null
   }
